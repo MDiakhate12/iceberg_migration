@@ -1,0 +1,318 @@
+{
+  "Statement": [
+    {
+      "Action": [
+        "ec2:DescribeVpcs",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:DescribeAddresses",
+        "ec2:AssociateAddress",
+        "ec2:DisassociateAddress",
+        "ec2:CreateNetworkInterface",
+        "ec2:DeleteNetworkInterface",
+        "ec2:ModifyNetworkInterfaceAttribute",
+        "ec2:CreateVpcEndpoint",
+        "ec2:DeleteVpcEndpoints",
+        "ec2:DescribeVpcEndpoints",
+        "ec2:ModifyVpcEndpoint"
+      ],
+      "Effect": "Allow",
+      "Resource": "*",
+      "Sid": "Ec2VpcPermissions"
+    },
+    {
+      "Action": [
+        "ec2:AllocateAddress"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Redshift": "true"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:ec2:*:*:elastic-ip/*"
+      ],
+      "Sid": "PublicAccessCreateEip"
+    },
+    {
+      "Action": [
+        "ec2:ReleaseAddress"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Redshift": "true"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:ec2:*:*:elastic-ip/*"
+      ],
+      "Sid": "PublicAccessReleaseEip"
+    },
+    {
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:PutRetentionPolicy"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:logs:*:*:log-group:/aws/redshift/*"
+      ],
+      "Sid": "EnableCreationAndManagementOfRedshiftCloudwatchLogGroups"
+    },
+    {
+      "Action": [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogStreams",
+        "logs:GetLogEvents"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:logs:*:*:log-group:/aws/redshift/*:log-stream:*"
+      ],
+      "Sid": "EnableCreationAndManagementOfRedshiftCloudwatchLogStreams"
+    },
+    {
+      "Action": [
+        "ec2:CreateSecurityGroup"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Redshift": "true"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:ec2:*:*:security-group/*"
+      ],
+      "Sid": "CreateSecurityGroupWithTags"
+    },
+    {
+      "Action": [
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:RevokeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:ModifySecurityGroupRules",
+        "ec2:DeleteSecurityGroup"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Redshift": "true"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:ec2:*:*:security-group/*"
+      ],
+      "Sid": "SecurityGroupPermissions"
+    },
+    {
+      "Action": [
+        "ec2:CreateSecurityGroup"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:ec2:*:*:vpc/*"
+      ],
+      "Sid": "CreateSecurityGroup"
+    },
+    {
+      "Action": "ec2:CreateTags",
+      "Condition": {
+        "StringEquals": {
+          "ec2:CreateAction": [
+            "CreateVpc",
+            "CreateSecurityGroup",
+            "CreateSubnet",
+            "CreateInternetGateway",
+            "CreateRouteTable",
+            "AllocateAddress"
+          ]
+        }
+      },
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:ec2:*:*:subnet/*",
+        "arn:aws:ec2:*:*:route-table/*",
+        "arn:aws:ec2:*:*:security-group/*",
+        "arn:aws:ec2:*:*:vpc/*",
+        "arn:aws:ec2:*:*:internet-gateway/*",
+        "arn:aws:ec2:*:*:elastic-ip/*"
+      ],
+      "Sid": "CreateTagsOnResources"
+    },
+    {
+      "Action": [
+        "ec2:DescribeVpcAttribute",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeInternetGateways",
+        "ec2:DescribeSecurityGroupRules",
+        "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeNetworkAcls",
+        "ec2:DescribeRouteTables"
+      ],
+      "Effect": "Allow",
+      "Resource": "*",
+      "Sid": "VPCPermissions"
+    },
+    {
+      "Action": [
+        "cloudwatch:PutMetricData"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "cloudwatch:namespace": [
+            "AWS/Redshift-Serverless",
+            "AWS/Redshift"
+          ]
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "*",
+      "Sid": "CloudWatch"
+    },
+    {
+      "Action": [
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:DeleteSecret",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:UpdateSecret",
+        "secretsmanager:UpdateSecretVersionStage",
+        "secretsmanager:RotateSecret"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceAccount": "$${aws:PrincipalAccount}",
+          "secretsmanager:ResourceTag/aws:secretsmanager:owningService": "redshift"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:secretsmanager:*:*:secret:redshift!*"
+      ],
+      "Sid": "SecretManager"
+    },
+    {
+      "Action": [
+        "secretsmanager:GetRandomPassword"
+      ],
+      "Effect": "Allow",
+      "Resource": "*",
+      "Sid": "SecretsManagerRandomPassword"
+    },
+    {
+      "Action": [
+        "ec2:AssignIpv6Addresses",
+        "ec2:UnassignIpv6Addresses"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:ec2:*:*:network-interface/*"
+      ],
+      "Sid": "IPV6Permissions"
+    },
+    {
+      "Action": [
+        "servicequotas:GetServiceQuota"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:servicequotas:*:*:ec2/L-0263D0A3",
+        "arn:aws:servicequotas:*:*:vpc/L-29B6F2EB"
+      ],
+      "Sid": "ServiceQuotasToCheckCustomerLimits"
+    },
+    {
+      "Action": [
+        "glue:Get*"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:glue:eu-west-1:486719478918:database/${env_name}_snowlake_gold",
+        "arn:aws:glue:eu-west-1:486719478918:database/${env_name}_snowlake_external",
+        "arn:aws:glue:eu-west-1:486719478918:table/${env_name}_snowlake_gold/*",
+        "arn:aws:glue:eu-west-1:486719478918:table/${env_name}_snowlake_external/*",
+        "arn:aws:glue:eu-west-1:486719478918:job/${env_name}_snowlake*"
+      ]
+    },
+    {
+      "Action": [
+        "glue:List*"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:glue:eu-west-1:486719478918:database/${env_name}_snowlake_gold",
+        "arn:aws:glue:eu-west-1:486719478918:database/${env_name}_snowlake_external",
+        "arn:aws:glue:eu-west-1:486719478918:table/${env_name}_snowlake_gold/*",
+        "arn:aws:glue:eu-west-1:486719478918:table/${env_name}_snowlake_external/*",
+        "arn:aws:glue:eu-west-1:486719478918:job/${env_name}_snowlake*"
+      ]
+    },
+    {
+      "Action": [
+        "s3:Get*",
+        "s3:List*"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:s3:::sglk-snowlake-${env_name}-eu-west-1",
+        "arn:aws:s3:::sglk-snowlake-${env_name}-eu-west-1/*"
+      ]
+    },
+    {
+      "Action": [
+        "kms:Decrypt",
+        "kms:Encrypt",
+        "kms:GenerateDataKey*",
+        "kms:DescribeKey",
+        "kms:ReEncrypt*"
+      ],
+      "Effect": "Allow",
+      "Resource": "arn:aws:kms:eu-west-1:486719478918:key/99b7e2c5-d204-4be6-a907-1ee5ef252fd1",
+      "Sid": "AccessDevSnowlakeKmsKey"
+    },
+    {
+      "Action": [
+        "s3:AbortMultipartUpload",
+        "s3:GetObject",
+        "s3:ListMultipartUploadParts",
+        "s3:PutObject"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:s3:::sglk-snowlake-${env_name}-eu-west-1/jman-results/",
+        "arn:aws:s3:::sglk-snowlake-${env_name}-eu-west-1/jman-results/*",
+        "arn:aws:s3:::sglk-snowlake-${env_name}-eu-west-1/external/jman/*"
+      ]
+    },
+    {
+      "Action": [
+        "s3:AbortMultipartUpload",
+        "s3:GetObject",
+        "s3:GetObjectAcl",
+        "s3:ListMultipartUploadParts"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:s3:::sglk-snowlake-${env_name}-eu-west-1/external/",
+        "arn:aws:s3:::sglk-snowlake-${env_name}-eu-west-1/external/*"
+      ]
+    },
+    {
+      "Action": [
+        "s3:AbortMultipartUpload",
+        "s3:GetObject",
+        "s3:ListMultipartUploadParts"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:s3:::sglk-snowlake-${env_name}-eu-west-1/gold/",
+        "arn:aws:s3:::sglk-snowlake-${env_name}-eu-west-1/gold/*"
+        ]
+    }
+  ],
+  "Version": "2012-10-17"
+}

@@ -1,0 +1,168 @@
+{
+  "Comment": "State Machine to export RDS Snapshots to S3",
+  "StartAt": "Instance Identifier",
+  "States": {
+    "Instance Identifier": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "Payload": {
+          "keyword.$": "$.application",
+          "environment": "${env}"
+        },
+        "FunctionName": "arn:aws:lambda:eu-west-1:486719478918:function:${env}_snowlake_lambda_instance_identifier:$LATEST"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "CreateDBSnapshot",
+      "ResultPath": "$.ResultInstanceIdentifier"
+    },
+    "CreateDBSnapshot": {
+      "Type": "Task",
+      "Parameters": {
+        "DbInstanceIdentifier.$": "$.ResultInstanceIdentifier.Payload.instance_identifier",
+        "DbSnapshotIdentifier.$": "$.ResultInstanceIdentifier.Payload.snapshot_pattern_name"
+      },
+      "Resource": "arn:aws:states:::aws-sdk:rds:createDBSnapshot",
+      "Next": "DescribeDBSnapshots",
+      "ResultPath": "$.CreateDBSnapshotResult",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.CreateDBSnapshotResultError",
+          "Next": "HandleError"
+        }
+      ]
+    },
+    "DescribeDBSnapshots": {
+      "Type": "Task",
+      "Next": "Choice CreateDB Snapshot",
+      "Parameters": {
+        "DbSnapshotIdentifier.$": "$.ResultInstanceIdentifier.Payload.snapshot_pattern_name"
+      },
+      "Resource": "arn:aws:states:::aws-sdk:rds:describeDBSnapshots",
+      "ResultPath": "$.DescribeDBSnapshotsResult",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.DescribeDBSnapshotsResultError",
+          "Next": "HandleError"
+        }
+      ]
+    },
+    "Choice CreateDB Snapshot": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Not": {
+            "Variable": "$.DescribeDBSnapshotsResult.DbSnapshots[0].Status",
+            "StringEquals": "available"
+          },
+          "Next": "Wait CreateDB Snapshot"
+        }
+      ],
+      "Default": "StartExportTask"
+    },
+    "StartExportTask": {
+      "Type": "Task",
+      "Next": "DescribeExportTasks",
+      "Parameters": {
+        "ExportTaskIdentifier.$": "$.ResultInstanceIdentifier.Payload.snapshot_pattern_name",
+        "IamRoleArn": "${iam_role_arn}",
+        "KmsKeyId": "${kms_key_id}",
+        "S3BucketName": "${s3_bucket_name}",
+        "S3Prefix.$": "$.ResultInstanceIdentifier.Payload.S3Prefix",
+        "SourceArn.$": "$.DescribeDBSnapshotsResult.DbSnapshots[0].DbSnapshotArn",
+        "ExportOnly.$": "$.exportOnly"
+      },
+      "Resource": "arn:aws:states:::aws-sdk:rds:startExportTask",
+      "ResultPath": "$.StartExportTaskResult",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.StartExportTaskResultError",
+          "Next": "HandleError"
+        }
+      ]
+    },
+    "DescribeExportTasks": {
+      "Type": "Task",
+      "Next": "Choice Export Task",
+      "Parameters": {
+        "ExportTaskIdentifier.$": "$.StartExportTaskResult.ExportTaskIdentifier"
+      },
+      "Resource": "arn:aws:states:::aws-sdk:rds:describeExportTasks",
+      "ResultPath": "$.DescribeExportTasksResult",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.DescribeExportTasksResultError",
+          "Next": "HandleError"
+        }
+      ]
+    },
+    "Choice Export Task": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Not": {
+            "Variable": "$.DescribeExportTasksResult.ExportTasks[0].Status",
+            "StringEquals": "COMPLETE"
+          },
+          "Next": "Wait Export Task"
+        }
+      ],
+      "Default": "Wait"
+    },
+    "Wait": {
+      "Type": "Wait",
+      "Seconds": 180,
+      "Next": "Export Sync"
+    },
+    "Export Sync": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "End": true,
+      "Parameters": {
+        "FunctionName": "arn:aws:lambda:eu-west-1:486719478918:function:${env}_snowlake_lambda_export_sync:$LATEST",
+        "Payload": {
+          "database_name.$": "$.application",
+          "export_task_identifier.$": "$.ResultInstanceIdentifier.Payload.snapshot_pattern_name"
+        }
+      },
+      "ResultPath": "$.ExportSyncResult",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.ExportSyncResultError",
+          "Next": "HandleError"
+        }
+      ]
+    },
+    "Wait Export Task": {
+      "Type": "Wait",
+      "Seconds": 5,
+      "Next": "DescribeExportTasks"
+    },
+    "Wait CreateDB Snapshot": {
+      "Type": "Wait",
+      "Seconds": 10,
+      "Next": "DescribeDBSnapshots",
+      "Comment": "Check the snapshot execution"
+    },
+    "HandleError": {
+      "Type": "Pass",
+      "End": true
+    }
+  }
+}

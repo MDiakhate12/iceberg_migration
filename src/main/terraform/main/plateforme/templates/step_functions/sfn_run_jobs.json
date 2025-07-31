@@ -1,0 +1,52 @@
+{
+  "Comment": "Step function that execute specific jobs if specified else executes planful jobs",
+  "StartAt": "CheckInput",
+  "States": {
+    "CheckInput": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.jobNames",
+          "IsPresent": true,
+          "Next": "RunGlueJobsWithInput"
+        }
+      ],
+      "Default": "SetDefaultJobs"
+    },
+    "SetDefaultJobs": {
+      "Type": "Pass",
+      "Result": {
+        "jobNames": [
+          "${env}_snowlake_bronze_netsuite_account",
+          "${env}_snowlake_bronze_netsuite_employee"
+        ]
+      },
+      "ResultPath": "$",
+      "Next": "RunGlueJobsWithInput"
+    },
+    "RunGlueJobsWithInput": {
+      "Type": "Map",
+      "ItemsPath": "$.jobNames",
+      "ItemSelector": {
+        "JobName.$": "$$.Map.Item.Value"
+      },
+      "Iterator": {
+        "StartAt": "StartGlueJobRun",
+        "States": {
+          "StartGlueJobRun": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::glue:startJobRun.sync",
+            "Parameters": {
+              "JobName.$": "$.JobName"
+            },
+            "End": true
+          }
+        }
+      },
+      "Next": "AllJobsCompleted"
+    },
+    "AllJobsCompleted": {
+      "Type": "Succeed"
+    }
+  }
+}

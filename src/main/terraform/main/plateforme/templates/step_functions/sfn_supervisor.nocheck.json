@@ -1,0 +1,847 @@
+{
+  "Comment": "Snowlake supervisor state machine",
+  "StartAt": "Get SFN Executions",
+  "States": {
+    "Get SFN Executions": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:sfn:listExecutions",
+      "Parameters": {
+        "StateMachineArn": "arn:aws:states:eu-west-1:486719478918:stateMachine:${env}-snowlake-supervisor",
+        "StatusFilter": "RUNNING"
+      },
+      "Next": "Avoid Simultaneous Execution",
+      "ResultSelector": {
+        "Executions.$": "$.Executions..ExecutionArn"
+      },
+      "ResultPath": "$.SfnExecutions"
+    },
+    "Avoid Simultaneous Execution": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.SfnExecutions.Executions[1]",
+          "IsPresent": true,
+          "Next": "Stop SFN"
+        }
+      ],
+      "Default": "Before ingest"
+    },
+    "Stop SFN": {
+      "Type": "Fail",
+      "Cause": "Exécution concurrente de la SFN ; annulation de l'exécution en cours"
+    },
+    "Before ingest": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "Lambda clean Snapshots 1",
+          "States": {
+            "Lambda clean Snapshots 1": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "arn:aws:lambda:eu-west-1:486719478918:function:${env}_snowlake_lambda_clean_snapshots:$LATEST"
+              },
+              "ResultPath": "$.BeforeIngest.CleanSnapshot",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Check clean_bronze",
+          "States": {
+            "Check clean_bronze": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "And": [
+                    {
+                      "Variable": "$.clean_bronze",
+                      "IsPresent": true
+                    },
+                    {
+                      "Variable": "$.clean_bronze",
+                      "BooleanEquals": true
+                    },
+                    {
+                      "Variable": "$.clean_bronze_targets",
+                      "IsPresent": true
+                    }
+                  ],
+                  "Next": "Clean Bronze"
+                }
+              ],
+              "Default": "Handle Result clean_bronze"
+            },
+            "Clean Bronze": {
+              "Type": "Map",
+              "ItemsPath": "$.clean_bronze_targets",
+              "ItemProcessor": {
+                "ProcessorConfig": {
+                  "Mode": "INLINE"
+                },
+                "StartAt": "Lambda clean Bronze",
+                "States": {
+                  "Lambda clean Bronze": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::lambda:invoke",
+                    "Parameters": {
+                      "FunctionName": "arn:aws:lambda:eu-west-1:486719478918:function:${env}_snowlake_lambda_clean_bronze:$LATEST",
+                      "Payload": {
+                        "table_schemas.$": "$.table_schemas",
+                        "s3_folders.$": "$.s3_folders"
+                      }
+                    },
+                    "Next" : "Handle Result Lambda clean_bronze"
+                  },
+                  "Handle Result Lambda clean_bronze": {
+                    "Type": "Pass",
+                    "ResultPath": "$.BeforeIngest.CleanBronze.result",
+                    "End": true
+                  }
+                }
+              },
+              "MaxConcurrency": 3,
+              "Next" : "Handle Result clean_bronze"
+            },
+            "Handle Result clean_bronze": {
+              "Type": "Pass",
+              "End": true
+            }
+          }
+        }
+      ],
+      "ResultPath": "$.BeforeIngest",
+      "Next": "Ingest data"
+    },
+    "Ingest data": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "Check ingest_rds",
+          "States": {
+            "Check ingest_rds": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "And": [
+                    {
+                      "Variable": "$.ingest_rds",
+                      "IsPresent": true
+                    },
+                    {
+                      "Variable": "$.ingest_rds",
+                      "BooleanEquals": true
+                    },
+                    {
+                      "Variable": "$.ingest_rds_applications",
+                      "IsPresent": true
+                    }
+                  ],
+                  "Next": "Declare RDS Sources"
+                }
+              ],
+              "Default": "Handle Result ingest_rds"
+            },
+            "Declare RDS Sources": {
+              "Type": "Pass",
+              "Result": ${jsonencode(sources)},
+              "ResultPath": "$.sources",
+              "Next": "Export Snapshots"
+            },
+            "Export Snapshots": {
+              "Type": "Map",
+              "ItemsPath": "$.sources",
+              "ItemProcessor": {
+                "ProcessorConfig": {
+                  "Mode": "INLINE"
+                },
+                "StartAt": "Complete Source",
+                "States": {
+                  "Complete Source": {
+                    "Type": "Pass",
+                    "Parameters": {
+                      "application.$": "$.application",
+                      "exportOnly.$": "$.exportOnly",
+                      "hasToIngest.$": "States.ArrayContains($$.Execution.Input.ingest_rds_applications, $.application)"
+                    },
+                    "ResultPath": "$",
+                    "Next": "Check Ingest RDS"
+                  },
+                  "Check Ingest RDS": {
+                    "Type": "Choice",
+                    "Choices": [
+                      {
+                        "Variable": "$.hasToIngest",
+                        "BooleanEquals": true,
+                        "Next": "SFN Export Snapshot RDS"
+                      }
+                    ],
+                    "Default": "Handle Result RDS"
+                  },
+                  "SFN Export Snapshot RDS": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::states:startExecution.sync:2",
+                    "Parameters": {
+                      "StateMachineArn": "${sfn_export_arn}",
+                      "Input": {
+                        "application.$": "$.application",
+                        "exportOnly.$": "$.exportOnly"
+                      }
+                    },
+                    "Next" : "Handle Result RDS"
+                  },
+                  "Handle Result RDS": {
+                    "Type": "Pass",
+                    "ResultPath": "$.IngestData.Rds.result",
+                    "End": true
+                  }
+                }
+              },
+              "MaxConcurrency": ${max_concurrency},
+              "Next": "Workflow Bronze Crawlers"
+            },
+            "Workflow Bronze Crawlers": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::states:startExecution.sync",
+              "Parameters": {
+                "StateMachineArn": "${sfn_run_workflow_arn}",
+                "Input": {
+                  "WorkflowName": "${workflow_bronze_crawlers_name}"
+                }
+              },
+              "Next": "Workflow Create Ref Views"
+            },
+            "Workflow Create Ref Views": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::states:startExecution.sync",
+              "Parameters": {
+                "StateMachineArn": "${sfn_run_workflow_arn}",
+                "Input": {
+                  "WorkflowName": "${workflow_referentiel_scodify_name}"
+                }
+              },
+              "Next": "Handle Result ingest_rds"
+            },
+            "Handle Result ingest_rds": {
+              "Type": "Pass",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Check ingest_external",
+          "States": {
+            "Check ingest_external": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "And": [
+                    {
+                      "Variable": "$.ingest_external",
+                      "IsPresent": true
+                    },
+                    {
+                      "Variable": "$.ingest_external",
+                      "BooleanEquals": true
+                    }
+                  ],
+                  "Next": "Lambda Ingest External"
+                }
+              ],
+              "Default": "Handle Result ingest_external"
+            },
+            "Lambda Ingest External": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "arn:aws:lambda:eu-west-1:486719478918:function:${env}_snowlake_lambda_ingest_external:$LATEST"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.SdkClientException"
+                  ],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 6,
+                  "BackoffRate": 2
+                }
+              ],
+              "Next": "Workflow Ingest External"
+            },
+            "Workflow Ingest External": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::states:startExecution.sync",
+              "Parameters": {
+                "StateMachineArn": "${sfn_run_workflow_arn}",
+                "Input": {
+                  "WorkflowName": "${workflow_ingest_external_name}"
+                }
+              },
+              "Next": "Handle Result ingest_external"
+            },
+            "Handle Result ingest_external": {
+              "Type": "Pass",
+              "ResultPath": "$.IngestData.External.result",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Check ingest_jira",
+          "States": {
+            "Check ingest_jira": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "And": [
+                    {
+                      "Variable": "$.ingest_jira",
+                      "IsPresent": true
+                    },
+                    {
+                      "Variable": "$.ingest_jira",
+                      "BooleanEquals": true
+                    }
+                  ],
+                  "Next": "Workflow Ingest Jira"
+                }
+              ],
+              "Default": "Handle Result ingest_jira"
+            },
+            "Workflow Ingest Jira": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::states:startExecution.sync",
+              "Parameters": {
+                "StateMachineArn": "${sfn_run_workflow_arn}",
+                "Input": {
+                  "WorkflowName": "${workflow_ingest_jira_name}"
+                }
+              },
+              "Next": "Handle Result ingest_jira"
+            },
+            "Handle Result ingest_jira": {
+              "Type": "Pass",
+              "ResultPath": "$.IngestData.Jira.result",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Check ingest_lucca",
+          "States": {
+            "Check ingest_lucca": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "And": [
+                    {
+                      "Variable": "$.ingest_lucca",
+                      "IsPresent": true
+                    },
+                    {
+                      "Variable": "$.ingest_lucca",
+                      "BooleanEquals": true
+                    }
+                  ],
+                  "Next": "Workflow Ingest Lucca"
+                }
+              ],
+              "Default": "Handle Result ingest_lucca"
+            },
+            "Workflow Ingest Lucca": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::states:startExecution.sync",
+              "Parameters": {
+                "StateMachineArn": "${sfn_run_workflow_arn}",
+                "Input": {
+                  "WorkflowName": "${workflow_ingest_lucca_name}"
+                }
+              },
+              "Next": "Handle Result ingest_lucca"
+            },
+            "Handle Result ingest_lucca": {
+              "Type": "Pass",
+              "ResultPath": "$.IngestData.Lucca.result",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Check ingest_matomo",
+          "States": {
+            "Check ingest_matomo": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "And": [
+                    {
+                      "Variable": "$.ingest_matomo",
+                      "IsPresent": true
+                    },
+                    {
+                      "Variable": "$.ingest_matomo",
+                      "BooleanEquals": true
+                    }
+                  ],
+                  "Next": "Workflow Ingest Matomo"
+                }
+              ],
+              "Default": "Handle Result ingest_matomo"
+            },
+            "Workflow Ingest Matomo": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::states:startExecution.sync",
+              "Parameters": {
+                "StateMachineArn": "${sfn_run_workflow_arn}",
+                "Input": {
+                  "WorkflowName": "${workflow_ingest_matomo_name}"
+                }
+              },
+              "Next": "Handle Result ingest_matomo"
+            },
+            "Handle Result ingest_matomo": {
+              "Type": "Pass",
+              "ResultPath": "$.IngestData.Matomo.result",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Check ingest_netsuite",
+          "States": {
+            "Check ingest_netsuite": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "And": [
+                    {
+                      "Variable": "$.ingest_netsuite",
+                      "IsPresent": true
+                    },
+                    {
+                      "Variable": "$.ingest_netsuite",
+                      "BooleanEquals": true
+                    }
+                  ],
+                  "Next": "Workflow Ingest Netsuite"
+                }
+              ],
+              "Default": "Handle Result ingest_netsuite"
+            },
+            "Workflow Ingest Netsuite": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::states:startExecution.sync",
+              "Parameters": {
+                "StateMachineArn": "${sfn_run_workflow_arn}",
+                "Input": {
+                  "WorkflowName": "${workflow_ingest_netsuite_name}"
+                }
+              },
+              "Next": "Handle Result ingest_netsuite"
+            },
+            "Handle Result ingest_netsuite": {
+              "Type": "Pass",
+              "ResultPath": "$.IngestData.Netsuite.result",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Check ingest_superoffice Workflow",
+          "States": {
+            "Check ingest_superoffice Workflow": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "And": [
+                    {
+                      "Variable": "$.ingest_superoffice",
+                      "IsPresent": true
+                    },
+                    {
+                      "Variable": "$.ingest_superoffice",
+                      "BooleanEquals": true
+                    }
+                  ],
+                  "Next": "Workflow Ingest Superoffice"
+                }
+              ],
+              "Default": "Handle Result ingest_superoffice"
+            },
+            "Workflow Ingest Superoffice": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::states:startExecution.sync",
+              "Parameters": {
+                "StateMachineArn": "${sfn_run_workflow_arn}",
+                "Input": {
+                  "WorkflowName": "${workflow_ingest_superoffice_name}"
+                }
+              },
+              "Next": "Handle Result ingest_superoffice"
+            },
+            "Handle Result ingest_superoffice": {
+              "Type": "Pass",
+              "ResultPath": "$.IngestData.Superoffice.result",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Check ingest_tribe Workflow",
+          "States": {
+            "Check ingest_tribe Workflow": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "And": [
+                    {
+                      "Variable": "$.ingest_tribe",
+                      "IsPresent": true
+                    },
+                    {
+                      "Variable": "$.ingest_tribe",
+                      "BooleanEquals": true
+                    },
+                    {
+                      "Variable": "$.tribe_refresh_token",
+                      "IsPresent": true
+                    }
+                  ],
+                  "Next": "Workflow Ingest Tribe"
+                }
+              ],
+              "Default": "Handle Result ingest_tribe"
+            },
+            "Workflow Ingest Tribe": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::aws-sdk:glue:startWorkflowRun",
+              "Parameters": {
+                "Name": "${workflow_ingest_tribe_name}",
+                "RunProperties": {
+                  "TribeRefreshToken.$": "$.tribe_refresh_token"
+                }
+              },
+              "ResultPath": "$.IngestData.Tribe.result",
+              "Next": "Handle Result ingest_tribe"
+            },
+            "Handle Result ingest_tribe": {
+              "Type": "Pass",
+              "ResultPath": "$.IngestData.Tribe.result",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Check ingest_webkua",
+          "States": {
+            "Check ingest_webkua": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "And": [
+                    {
+                      "Variable": "$.ingest_webkua",
+                      "IsPresent": true
+                    },
+                    {
+                      "Variable": "$.ingest_webkua",
+                      "BooleanEquals": true
+                    }
+                  ],
+                  "Next": "Workflow Ingest Webkua"
+                }
+              ],
+              "Default": "Handle Result ingest_webkua"
+            },
+            "Workflow Ingest Webkua": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::states:startExecution.sync",
+              "Parameters": {
+                "StateMachineArn": "${sfn_run_workflow_arn}",
+                "Input": {
+                  "WorkflowName": "${workflow_ingest_webkua_name}"
+                }
+              },
+              "Next": "Handle Result ingest_webkua"
+            },
+            "Handle Result ingest_webkua": {
+              "Type": "Pass",
+              "ResultPath": "$.IngestData.Webkua.result",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Check ingest_visma",
+          "States": {
+            "Check ingest_visma": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "And": [
+                    {
+                      "Variable": "$.ingest_visma",
+                      "IsPresent": true
+                    },
+                    {
+                      "Variable": "$.ingest_visma",
+                      "BooleanEquals": true
+                    }
+                  ],
+                  "Next": "Workflow Ingest Visma"
+                }
+              ],
+              "Default": "Handle Result ingest_visma"
+            },
+            "Workflow Ingest Visma": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::states:startExecution.sync",
+              "Parameters": {
+                "StateMachineArn": "${sfn_run_workflow_arn}",
+                "Input": {
+                  "WorkflowName": "${workflow_ingest_visma_name}"
+                }
+              },
+              "Next": "Handle Result ingest_visma"
+            },
+            "Handle Result ingest_visma": {
+              "Type": "Pass",
+              "ResultPath": "$.IngestData.Visma.result",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Check ingest_dispatch_pbi",
+          "States": {
+            "Check ingest_dispatch_pbi": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "And": [
+                    {
+                      "Variable": "$.ingest_dispatch_pbi",
+                      "IsPresent": true
+                    },
+                    {
+                      "Variable": "$.ingest_dispatch_pbi",
+                      "BooleanEquals": true
+                    }
+                  ],
+                  "Next": "Lambda Ingest Dispatch PBI"
+                }
+              ],
+              "Default": "Handle Result ingest_dispatch_pbi"
+          },
+          "Lambda Ingest Dispatch PBI": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "arn:aws:lambda:eu-west-1:486719478918:function:${env}_snowlake_lambda_dispatch_pbi:$LATEST",
+              "Payload": {
+                "reports_to_export.$": "$.reports_to_export",
+                "emails.$": "$.emails"
+              }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "Lambda.SdkClientException"
+                ],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 6,
+                "BackoffRate": 2
+              }
+            ],
+            "Next": "Handle Result ingest_dispatch_pbi"
+          },
+          "Handle Result ingest_dispatch_pbi": {
+              "Type": "Pass",
+              "ResultPath": "$.IngestData.DispatchPBI.result",
+              "End": true
+          }
+          }
+        },
+        {
+          "StartAt": "Check ingest_afas",
+          "States": {
+            "Check ingest_afas": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "And": [
+                    {
+                      "Variable": "$.ingest_afas",
+                      "IsPresent": true
+                    },
+                    {
+                      "Variable": "$.ingest_afas",
+                      "BooleanEquals": true
+                    }
+                  ],
+                  "Next": "Workflow Ingest Afas"
+                }
+              ],
+              "Default": "Handle Result ingest_afas"
+            },
+            "Workflow Ingest Afas": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::states:startExecution.sync",
+              "Parameters": {
+                "StateMachineArn": "${sfn_run_workflow_arn}",
+                "Input": {
+                  "WorkflowName": "${workflow_ingest_afas_name}"
+                }
+              },
+              "Next": "Handle Result ingest_afas"
+            },
+            "Handle Result ingest_afas": {
+              "Type": "Pass",
+              "ResultPath": "$.IngestData.Afas.result",
+              "End": true
+            }
+          }
+        }
+      ],
+      "ResultPath": "$.IngestData",
+      "Next": "After ingest"
+    },
+    "After ingest": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "Lambda clean Snapshots 2",
+          "States": {
+            "Lambda clean Snapshots 2": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "arn:aws:lambda:eu-west-1:486719478918:function:${env}_snowlake_lambda_clean_snapshots:$LATEST"
+              },
+              "ResultPath": "$.AfterIngest.CleanSnapshot",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Check run_workflow_silver_gold",
+          "States": {
+            "Check run_workflow_silver_gold": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "And": [
+                    {
+                      "Variable": "$.run_workflow_silver_gold",
+                      "IsPresent": true
+                    },
+                    {
+                      "Variable": "$.run_workflow_silver_gold",
+                      "BooleanEquals": true
+                    }
+                  ],
+                  "Next": "Workflow Silver and Gold Jobs"
+                }
+              ],
+              "Default": "Handle Result run_workflow_silver_gold"
+            },
+            "Workflow Silver and Gold Jobs": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::states:startExecution.sync",
+              "Parameters": {
+                "StateMachineArn": "${sfn_run_workflow_arn}",
+                "Input": {
+                  "WorkflowName": "${workflow_silver_gold_jobs_name}"
+                }
+              },
+              "Next": "Handle Result run_workflow_silver_gold"
+            },
+            "Handle Result run_workflow_silver_gold": {
+              "Type": "Pass",
+              "ResultPath": "$.AfterIngest.WorkflowSilverGold.result",
+              "Next": "Workflow Tech Jobs"
+            },
+            "Workflow Tech Jobs": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::states:startExecution.sync",
+              "Parameters": {
+                "StateMachineArn": "${sfn_run_workflow_arn}",
+                "Input": {
+                  "WorkflowName": "${workflow_tech_jobs_name}"
+                }
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Lambda check time",
+          "States": {
+            "Lambda check time": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "arn:aws:lambda:eu-west-1:486719478918:function:${env}_snowlake_lambda_check_time:$LATEST",
+                "Payload": {
+                  "types": ["isFirstDayOfMonth","isAfternoon"]
+                }
+              },
+              "ResultPath": "$.AfterDeactivate.results",
+              "Next": "Handle Result time check"
+            },
+            "Handle Result time check": {
+              "Type": "Choice",
+              "Choices": [
+                {
+                  "And": [
+                    {
+                      "Variable": "$.AfterDeactivate.results.isFirstDayOfMonth",
+                      "IsPresent": true
+                    },
+                    {
+                      "Variable": "$.AfterDeactivate.results.isFirstDayOfMonth",
+                      "BooleanEquals": true
+                    },
+                    {
+                      "Variable": "$.AfterDeactivate.results.isAfternoon",
+                      "IsPresent": true
+                    },
+                    {
+                      "Variable": "$.AfterDeactivate.results.isAfternoon",
+                      "BooleanEquals": false
+                    }
+                  ],
+                  "Next": "Workflow tech_deactivate"
+                }
+              ],
+              "Default": "Skip Deactivate"
+            },
+            "Workflow tech_deactivate":{
+              "Type": "Task",
+              "Resource": "arn:aws:states:::states:startExecution.sync",
+              "Parameters": {
+                "StateMachineArn": "${sfn_run_workflow_arn}",
+                "Input": {
+                  "WorkflowName": "${workflow_tech_deactivate_jobs_name}"
+                }
+              },
+              "End": true
+            },
+            "Skip Deactivate": {
+              "Type": "Pass",
+              "Comment": "Conditions are not met to start deactivating (not the first of the month or already in the afternoon).",
+              "End": true
+            }
+          }
+        }
+      ],
+      "ResultPath": "$.AfterIngest",
+      "End": true
+    }
+  }
+}

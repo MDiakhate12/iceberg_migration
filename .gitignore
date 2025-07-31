@@ -1,0 +1,108 @@
+###################################
+# TEMPLATE GERE PAR process-files #
+#    NE PAS MODIFIER A LA MAIN    #
+###################################
+
+# IDE #
+#######
+
+# Eclipse Project Files
+.settings/
+.project
+.classpath
+bin/
+
+# Idea Project Files
+.idea/
+*.iml
+.editorconfig
+.ant-targets-build.xml
+
+# Maven build
+.mvn/wrapper/maven-wrapper.jar
+target/
+overlays/
+
+# Gradle build
+.gradle/
+build/
+
+# Sogelink project #
+####################
+
+# General
+logs/
+buildinfo.properties
+buildinfo-test.properties
+
+# Angular app
+dist/
+node_modules/
+npm-debug.log
+yarn-error.log
+lerna-debug.log
+.angular/
+*/.nx/cache/
+.sass-cache/
+.tmp/
+.eslintcache
+*-schemas-ts/package.json
+*-schemas-nodejs/package.json
+*-domaine-lib-ts/package.json
+*-front/package.json
+*-front/src/main/resources/
+
+# Cypress
+e2e/package.json
+
+# Mobile app
+.bundle
+.sourcemaps/
+hooks/
+config.xml
+test-config/
+fastlane/*
+!fastlane/.env.*
+fastlane/.env.default
+Gemfile
+Gemfile.lock
+platforms/
+plugins/
+www/
+src/app/config.ts
+sonar-project.properties
+
+# NodeJS
+.nyc_output/
+*-services-webapp/package.json
+
+# Cmd (shell)
+.cmd_lock
+
+# Terraform
+*.tfstate*
+.terraform/
+terraform_modules/
+test/.terraform.lock.hcl
+
+# Ansible
+*.retry
+/molecule/
+.cache/
+
+# Python
+.venv
+**/__pycache__
+*.egg-info/
+pipfile_requirements.txt
+
+# Gitlab pages
+/public/
+
+# MKdocs
+src/main/documentation/mkdocs.yml
+src/main/documentation/mkdocs-conf.yml
+src/main/documentation/mkdocs-conf.nocheck.yml
+
+# Local Test Files
+snowlake-glue-jobs/temp_local_tests/

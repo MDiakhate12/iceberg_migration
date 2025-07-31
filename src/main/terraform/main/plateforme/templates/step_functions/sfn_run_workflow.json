@@ -1,0 +1,67 @@
+{
+  "Comment": "Step Function that runs a workflow and then checks its status",
+  "StartAt": "Run Workflow",
+  "States": {
+    "Run Workflow": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:glue:startWorkflowRun",
+      "Parameters": {
+        "Name.$": "$.WorkflowName"
+      },
+      "ResultPath": "$.WorkflowRun",
+      "Next": "Get Workflow Run"
+    },
+    "Get Workflow Run": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:glue:getWorkflowRun",
+      "Parameters": {
+        "Name.$": "$.WorkflowName",
+        "RunId.$": "$.WorkflowRun.RunId"
+      },
+      "ResultPath": "$.WorkflowRun.Details",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "Handle Error"
+        }
+      ],
+      "Next": "Check Workflow Status"
+    },
+    "Check Workflow Status": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.WorkflowRun.Details.Run.Status",
+          "StringEquals": "RUNNING",
+          "Next": "Wait and Retry"
+        },
+        {
+          "Variable": "$.WorkflowRun.Details.Run.Status",
+          "StringEquals": "COMPLETED",
+          "Next": "Workflow Completed Successfully"
+        },
+        {
+          "Variable": "$.WorkflowRun.Details.Run.Status",
+          "StringEquals": "FAILED",
+          "Next": "Workflow Failed"
+        }
+      ],
+      "Default": "Wait and Retry"
+    },
+    "Wait and Retry": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "Get Workflow Run"
+    },
+    "Workflow Completed Successfully": {
+      "Type": "Pass",
+      "End": true
+    },
+    "Workflow Failed": {
+      "Type": "Fail"
+    },
+    "Handle Error": {
+      "Type": "Fail"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+[[source]]
+url = "http://nexus.main.forge/repository/python-group-all/simple"
+verify_ssl = false
+name = "pypi"
+
+[dev-packages]
+
+[packages]
+boto3 = "*"
+requests = "*"
+
+[requires]
+python_version = "3.12"

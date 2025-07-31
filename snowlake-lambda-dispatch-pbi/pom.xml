@@ -1,0 +1,232 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>fr.sogelink.snowlake</groupId>
+        <artifactId>snowlake-parent</artifactId>
+        <version>BUILD-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>snowlake-lambda-dispatch-pbi</artifactId>
+    <packaging>pom</packaging>
+
+    <name>Sogelink - Snowlake - Lambda Dispatch PBI PDF</name>
+    <description>Lambda to export Power BI Reports as PDF</description>
+
+    <!-- Properties -->
+    <properties>
+        <docker.image.name>sogelink/snowlake-lambda-dispatch-pbi</docker.image.name>
+        <docker.build.directory>${project.build.directory}/docker</docker.build.directory>
+        <project.version>${project.version}</project.version>
+        <buildtime>${maven.build.timestamp}</buildtime>
+        <python.version>3.12</python.version>
+    </properties>
+
+    <build>
+        <plugins>
+            <plugin>
+                <artifactId>maven-clean-plugin</artifactId>
+                <configuration>
+                    <failOnError>false</failOnError>
+                    <filesets>
+                        <fileset>
+                            <directory>${project.basedir}/.venv</directory>
+                        </fileset>
+                    </filesets>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>properties-maven-plugin</artifactId>
+            </plugin>
+
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>get-python-dependencies</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <workingDirectory>${project.basedir}</workingDirectory>
+                            <environmentVariables>
+                                <PIPENV_VENV_IN_PROJECT>true</PIPENV_VENV_IN_PROJECT>
+                                <PIPENV_IGNORE_VIRTUALENVS>1</PIPENV_IGNORE_VIRTUALENVS>
+                            </environmentVariables>
+                            <executable>bash</executable>
+                            <arguments>
+                                <argument>-cl</argument>
+                                <argument>pipenv --python ${python.version} install</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+
+                    <execution>
+                        <id>login-docker-ecr</id>
+                        <phase>deploy</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <workingDirectory>${project.basedir}</workingDirectory>
+                            <executable>bash</executable>
+                            <arguments>
+                                <argument>-cl</argument>
+                                <argument>aws ecr get-login-password --region eu-west-1 | docker login --username AWS --password-stdin ${docker.private.ecr-repository}</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+
+                    <execution>
+                        <id>retag-docker-ecr</id>
+                        <phase>deploy</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <workingDirectory>${project.basedir}</workingDirectory>
+                            <executable>bash</executable>
+                            <arguments>
+                                <argument>-cl</argument>
+                                <argument>docker tag ${docker.private.repository}/${docker.image.name}:${project.version} ${docker.private.ecr-repository}/${docker.image.name}:${project.version}</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+
+                    <execution>
+                        <id>push-docker-nexus</id>
+                        <phase>deploy</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <workingDirectory>${project.basedir}</workingDirectory>
+                            <executable>bash</executable>
+                            <arguments>
+                                <argument>-cl</argument>
+                                <argument>docker push ${docker.private.repository}/${docker.image.name}:${project.version}</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+
+                    <execution>
+                        <id>push-docker-ecr</id>
+                        <phase>deploy</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <workingDirectory>${project.basedir}</workingDirectory>
+                            <executable>bash</executable>
+                            <arguments>
+                                <argument>-cl</argument>
+                                <argument>docker push ${docker.private.ecr-repository}/${docker.image.name}:${project.version}</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <!-- Generation des resources avec placeholder -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>expand-docker-template</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>copy-resources</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.directory}</outputDirectory>
+                            <resources>
+                                <resource>
+                                    <directory>src/main/docker</directory>
+                                    <filtering>true</filtering>
+                                </resource>
+                            </resources>
+                        </configuration>
+                    </execution>
+
+                    <execution>
+                        <id>copy-python-source</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>copy-resources</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.directory}/python</outputDirectory>
+                            <resources>
+                                <resource>
+                                    <directory>src/main/python</directory>
+                                </resource>
+                            </resources>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>copy-python-env</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>copy-resources</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.directory}/venv</outputDirectory>
+                            <resources>
+                                <resource>
+                                    <directory>.venv/lib/python${python.version}/site-packages</directory>
+                                </resource>
+                                <resource>
+                                    <directory>.venv/lib64/python${python.version}/site-packages</directory>
+                                </resource>
+                            </resources>
+                        </configuration>
+                    </execution>
+
+                    <execution>
+                        <id>copy-resources-source</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>copy-resources</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.directory}/python</outputDirectory>
+                            <resources>
+                                <resource>
+                                    <directory>src/main/resources</directory>
+                                </resource>
+                            </resources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>com.spotify</groupId>
+                <artifactId>dockerfile-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>docker-nexus</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>build</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <skip>${skipDocker}</skip>
+                    <contextDirectory>${project.build.directory}</contextDirectory>
+                    <pullNewerImage>true</pullNewerImage>
+                    <repository>${docker.private.repository}/${docker.image.name}</repository>
+                    <tag>${project.version}</tag>
+                    <verbose>true</verbose>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

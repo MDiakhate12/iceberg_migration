@@ -1,0 +1,34 @@
+{
+    "Comment": "Step Function that execute a state only if its condition is satisfied",
+    "StartAt": "Check Condition",
+    "States": {
+      "Check Condition": {
+        "Type": "Choice",
+        "Choices": [
+          {
+            "Variable.$": "$.ExecuteCondition",
+            "BooleanEquals": true,
+            "Next": "Execute State"
+          }
+        ],
+        "Default": "End"
+      },
+      "Execute State": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::states:startExecution.sync",
+        "Parameters": {
+          "StateMachineArn": "${sfn_run_execute_state}",
+          "Input": {
+            "TaskType.$": "$.TaskType",
+            "TaskName.$": "$.TaskName"
+          }
+        },
+        "Next": "End"
+      },
+      "End": {
+        "Type": "Fail",
+        "Error": "Non True",
+        "Cause.$": "Json variable $.ExecuteCondition ether in input nor equals to True"
+      }
+    }
+  }

@@ -1,0 +1,88 @@
+{
+  "Comment": "Execute a task given its type and name",
+  "StartAt": "Determine task type",
+  "States": {
+    "Determine task type": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "${TaskType}",
+          "StringEquals": "lambda",
+          "Next": "Execute Lambda"
+        },
+        {
+          "Variable": "${TaskType}",
+          "StringEquals": "workflow",
+          "Next": "Execute Workflow"
+        },
+        {
+          "Variable": "${TaskType}",
+          "StringEquals": "map",
+          "Next": "Execute Map"
+        }
+      ],
+      "Default": "UnknownTaskType"
+    },
+    "Execute Lambda": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${TaskName}"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2
+        }
+      ],
+      "End": true
+    },
+    "Execute Workflow": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::states:startExecution.sync",
+      "Parameters": {
+        "StateMachineArn": "${sfn_run_workflow_arn}",
+        "Input": {
+          "WorkflowName": "${TaskName}"
+        }
+      },
+      "End": true
+    },
+    "Execute Map": {
+      "Type": "Map",
+      "ItemsPath": "$.sources",
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "Thing",
+        "States": {
+          "Thing": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::states:startExecution.sync:2",
+            "Parameters": {
+              "StateMachineArn": "${sfn_export_arn}",
+              "Input": {
+                "application.$": "$.application",
+                "exportOnly.$": "$.exportOnly"
+              }
+            },
+            "End": true
+          }
+        }
+      },
+      "End": true
+    },
+    "UnknownTaskType": {
+      "Type": "Fail",
+      "Error": "UnknownTaskType",
+      "Cause": "Type de composant inconnu."
+    }
+  }
+}
