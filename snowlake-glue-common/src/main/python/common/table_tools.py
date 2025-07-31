@@ -26,19 +26,6 @@ class WriteMode:
         return [f.default for f in fields(WriteMode)]
 
 
-@dataclass
-class TimeCheck:
-    FIRSTDAY = "isFirstDayOfMonth"
-    LASTDAY = "isLastDayOfMonth"
-    WEEKEND = "isWeekEnd"
-    AFTERNOON = "isAfternoon"
-    WORKINGHOUR = "isWorkingHours"
-
-    @classmethod
-    def get_all() -> list:
-        return [f.default for f in fields(WriteMode)]
-
-
 def check_schema_change(target_df, final_df):
 
     target_schema_diff = {c for c in set(target_df.schema) - set(final_df.schema) if not c.name.startswith("_")}
@@ -98,13 +85,11 @@ def get_attribute_columns(df, primary_keys):
 
 
 def generate_hash(attribute_columns, excluded_columns=None):
-
-    sorted_attribute_columns = sorted(attribute_columns)
-
-    coalesced_attribute_columns = [F.coalesce(F.col(c).cast("string"), F.lit("")) for c in sorted_attribute_columns]
-
-    if excluded_columns:
-        coalesced_attribute_columns = [c for c in coalesced_attribute_columns if c not in excluded_columns]
+    coalesced_attribute_columns = [
+        F.coalesce(F.col(col).cast("string"), F.lit(""))
+        for col in sorted(attribute_columns)
+        if col not in excluded_columns
+    ]
 
     return F.md5(F.concat(*coalesced_attribute_columns))
 
@@ -536,8 +521,65 @@ class TableMetadata:
         print(procedure)
         return self.spark.sql(procedure)
 
-    def sql(self, query):
 
-        print(query)
+def deactivate_deleted_records(
+    target_df: DataFrame,
+    datasource,
+    spark: SparkSession,
+    deleted_primary_keys: list[str],
+):
+    """Mark deleted records in the target table based on the primary keys."""
 
-        return self.spark.sql(query)
+    catalog = spark.conf.get("spark.environment.catalog_name")
+    database = spark.conf.get("spark.environment.database_name")
+
+    logger.info(f"Marking deleted records in target table {datasource.target_table_name}...")
+    if "_is_deleted" not in target_df.columns:
+        # Add '_is_deleted' column if it does not exist
+        logger.info("'_is_deleted' non existent, adding it to the target table...")
+        create_is_deleted_column_query = f"""
+            ALTER TABLE {catalog}.{database}.{datasource.target_table_name}
+                ADD COLUMN _is_deleted BOOLEAN
+        """
+        logger.info(f"Executing query to add '_is_deleted' column: {create_is_deleted_column_query}")
+        spark.sql(create_is_deleted_column_query)
+
+        # Initialize '_is_deleted' column to FALSE for all rows
+        initialize_is_deleted_query = f"""
+            UPDATE {catalog}.{database}.{datasource.target_table_name}
+            SET _is_deleted = FALSE
+        """
+        logger.info(f"Executing query to initialize '_is_deleted' column: {initialize_is_deleted_query}")
+        spark.sql(initialize_is_deleted_query)
+
+    # Create a DataFrame with the deleted primary keys
+    deleted_rows_df = target_df.where(F.col(datasource.primary_keys[0]).isin(list(deleted_primary_keys)))
+    deleted_rows_df = deleted_rows_df.withColumn("_is_deleted", F.lit(True))
+
+    # If write_mode is SCD2, set _is_active to False for deleted rows
+    if datasource.write_mode == WriteMode.SCD2:
+        deleted_rows_df = deleted_rows_df.withColumn("_is_active", F.lit(False))
+        deactivate_scd2 = ", _is_active = FALSE"
+    else:
+        deactivate_scd2 = ""
+
+    # Create a temporary view for the deleted rows
+    tmp_view_name = "deleted_rows_temp_view"
+    deleted_rows_df.createOrReplaceTempView(tmp_view_name)
+
+    # Merge the deleted rows into the target table
+    number_of_deleted_primary_keys = len(deleted_primary_keys)
+
+    logger.info(f"Marking {number_of_deleted_primary_keys} rows in target table {datasource.target_table_name} as deleted...")
+    merge_query = f"""
+        MERGE INTO {catalog}.{database}.{datasource.target_table_name} AS target
+        USING {tmp_view_name} AS source
+        ON {create_merge_condition(datasource.primary_keys)}
+        WHEN MATCHED THEN
+            UPDATE SET
+                _is_deleted = TRUE
+                {deactivate_scd2}
+    """
+
+    print(f"Executing delete query: {merge_query}")
+    spark.sql(merge_query)

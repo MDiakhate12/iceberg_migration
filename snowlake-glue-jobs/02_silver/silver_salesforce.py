@@ -127,6 +127,7 @@ if table_exists:
     deleted_primary_keys = set(target_primary_keys) - set(source_primary_keys)
 
     if deleted_primary_keys:
+
         logging.warning(f"Some primary keys have been deleted from source table {datasource.target_table_name} but are still present in target... {deleted_primary_keys}")
 
         logger.info(f"Collected {len(list(set(source_primary_keys)))} primary keys in source between")
@@ -137,55 +138,15 @@ if table_exists:
 
         target_df = spark.table(f"{catalog}.{database}.{datasource.target_table_name}")
 
-        if "_is_deleted" not in target_df.columns:
-            # Add '_is_deleted' column if it does not exist
-            logger.info("'_is_deleted' non existent, adding it to the target table...")
-            create_is_deleted_column_query = f"""
-                ALTER TABLE {catalog}.{database}.{datasource.target_table_name}
-                    ADD COLUMN _is_deleted BOOLEAN
-            """
-            logger.info(f"Executing query to add '_is_deleted' column: {create_is_deleted_column_query}")
-            spark.sql(create_is_deleted_column_query)
+        table_tools.deactivate_deleted_records(
+            target_df=target_df,
+            datasource=datasource,
+            spark=spark,
+            deleted_primary_keys=deleted_primary_keys,
+        )
 
-            # Initialize '_is_deleted' column to FALSE for all rows
-            initialize_is_deleted_query = f"""
-                UPDATE {catalog}.{database}.{datasource.target_table_name}
-                SET _is_deleted = FALSE
-            """
-            logger.info(f"Executing query to initialize '_is_deleted' column: {initialize_is_deleted_query}")
-            spark.sql(initialize_is_deleted_query)
-
-        # Create a DataFrame with the deleted primary keys
-        deleted_rows_df = target_df.where(F.col(datasource.primary_keys[0]).isin(list(deleted_primary_keys)))
-        deleted_rows_df = deleted_rows_df.withColumn("_is_deleted", F.lit(True))
-
-        # If write_mode is SCD2, set _is_active to False for deleted rows
-        if datasource.write_mode == table_tools.WriteMode.SCD2:
-            deleted_rows_df = deleted_rows_df.withColumn("_is_active", F.lit(False))
-            deactivate_scd2 = ", _is_active = FALSE"
-        else:
-            deactivate_scd2 = ""
-
-        # Create a temporary view for the deleted rows
-        tmp_view_name = "deleted_rows_temp_view"
-        deleted_rows_df.createOrReplaceTempView(tmp_view_name)
-
-        # Merge the deleted rows into the target table
-        number_of_deleted_primary_keys = len(deleted_primary_keys)
-
-        logger.info(f"Marking {number_of_deleted_primary_keys} rows in target table {datasource.target_table_name} as deleted...")
-        merge_query = f"""
-            MERGE INTO {catalog}.{database}.{datasource.target_table_name} AS target
-            USING {tmp_view_name} AS source
-            ON {table_tools.create_merge_condition(datasource.primary_keys)}
-            WHEN MATCHED THEN
-                UPDATE SET
-                    _is_deleted = TRUE
-                    {deactivate_scd2}
-        """
-
-        print(f"Executing delete query: {merge_query}")
-        spark.sql(merge_query)
+        # TODO
+        # Merge new records into target table
 else:
     logging.info(f"Writing table {datasource.target_table_name} into '{database}'...")
 
