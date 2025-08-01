@@ -9,7 +9,6 @@ import logging
 import datasources
 import pyspark.sql.functions as F
 from pyspark.sql import DataFrame
-from pyiceberg.catalog import load_catalog
 
 
 # CONFIGURE ICEBGERG
@@ -52,38 +51,6 @@ table_exists = etl_tools.check_table_exists(
         db='silver',
         table=datasource.target_table_name,
 )
-
-# %%
-
-
-def merge_schema(
-        datasource,
-        source_df,
-        target_df,
-        catalog,
-        source_database,
-        target_database):
-
-    """Merge the schema of the source DataFrame with the target DataFrame in Iceberg."""
-
-    dropped_columns = set(target_df.columns) - set(source_df.columns)
-    new_columns = set(source_df.columns) - set(target_df.columns)
-
-    if dropped_columns:
-        logger.warning(f"Some columns have been from source table {datasource.target_table_name} but are still present in target... {dropped_columns}")
-        # TODO
-        # Handle dropped columns if necessary, e.g., by removing them from the target table schema or by always setting them to null in target
-
-    if new_columns:
-        logger.warning(f"Some columns have been added to source table {datasource.target_table_name} but are not present in target... {new_columns}")
-        pyiceberg_catalog = load_catalog(catalog)
-
-        target = pyiceberg_catalog.load_table(f"{target_database}.{datasource.target_table_name}")
-        source = pyiceberg_catalog.load_table(f"{source_database}.{datasource.source_table_name}")
-
-        with target.update_schema() as update:
-            update.union_by_name(source.schema())
-
 # %%
 
 
@@ -145,8 +112,34 @@ if table_exists:
             deleted_primary_keys=deleted_primary_keys,
         )
 
-    # TODO
-    # Merge new records into target table
+    if new_primary_keys:
+
+        logging.info(f"Found {len(new_primary_keys)} new primary keys in source but not in target")
+
+        new_records_df = df.filter(
+            F.col(datasource.primary_keys[0]).isin(new_primary_keys)
+        )
+
+        new_records_df = new_records_df.withColumn("_is_deleted", F.lit(False))
+
+        logging.info(f"Writing {datasource.target_table_name} into '{database}'...")
+
+        table_tools.write_iceberg(
+            df=df,
+            primary_keys=datasource.primary_keys,
+            table_name=datasource.target_table_name,
+            datetime_column=datasource.datetime_column,
+            glue_context=gc,
+            spark=spark,
+            write_mode=datasource.write_mode,
+            excluded_attribute_from_hash=["_is_deleted"],
+            tableProperties={
+                'write.spark.accept-any-schema': 'true'
+            },
+            options={
+                "mergeSchema": "true"
+            }
+        )
 else:
     logging.info(f"Writing table {datasource.target_table_name} into '{database}'...")
 
