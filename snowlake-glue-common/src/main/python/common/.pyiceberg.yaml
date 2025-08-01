@@ -1,0 +1,5 @@
+catalog:
+  iceberg_catalog:
+    type: glue
+    client.profile: sglk
+    client.region: eu-west-1
