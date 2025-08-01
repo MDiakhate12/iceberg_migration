@@ -6,9 +6,7 @@ from pyspark.context import SparkContext
 from awsglue.context import GlueContext
 import etl_tools
 import table_tools
-from datetime import datetime
-from pyiceberg.catalog import load_catalog
-from pyiceberg.types import IntegerType
+from pyspark.sql import functions as F
 
 
 args = etl_tools.get_args()
@@ -16,9 +14,6 @@ conf = etl_tools.configure_iceberg(
     env=args["environment"],
     db="bronze"
 )
-
-conf.set("spark.driver.memory", "28g")
-conf.set("spark.memory.fraction", "0.9")
 
 sc = SparkContext(conf=conf)
 gc = GlueContext(sc)
@@ -43,87 +38,59 @@ metadata = table_tools.TableMetadata(
 )
 
 # Obtenir la date actuelle au format 'YYYY-MM-DD HH:MM:SS'
-current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+# current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+metadata.get("snapshots").show()
+snapshot_datetime = F.to_date("committed_at", "yyyy-MM-dd HH:mm:ss.SSSSSS").alias("committed_at")
+latest_snapshot = (
+    metadata
+    .get("snapshots")
+    .orderBy(snapshot_datetime.desc())
+    .limit(1)
+    .collect()
+)
+print(f"Latest snapshot: {latest_snapshot}")
+last_snapshot_timestamp = latest_snapshot[0]["committed_at"]
+latest_snapshot_id = latest_snapshot[0]["snapshot_id"]
 
-print(current_time)
+zorder_sorting_column = args.get("zorder_sorting_column", "_ingest")  # Recommandé de mettre une colonne sur laquelle on fait beaucoup de filtres (pas forcément une colonne de date)
+target_file_size_bytes = args.get("target_file_size_bytes", f'{200 * 1024 * 1024}')  # 200 Mo par défaut
+
+# Afficher les informations du dernier snapshot
+print(f"Latest snapshot ID: {latest_snapshot_id}")
+print(f"Latest snapshot timestamp {last_snapshot_timestamp}")
 
 # %%
+# Appel de la méthode pour réécrire les fichiers de données avec Z-Ordering
 metadata.call(
     "rewrite_data_files",
     options={
         "strategy": "'sort'",
-        "sort_order": "'start_date_time DESC NULLS LAST'",
+        "sort_order": f"'{zorder_sorting_column} DESC NULLS LAST'",
         "options": f"""map(
                 'min-input-files', '2',
-                'target-file-size-bytes', '{200 * 1024 * 1024}'
+                'target-file-size-bytes', '{target_file_size_bytes}'
             )"""
     }
 ).show()
 
-# %%
-catalog = load_catalog("iceberg_catalog")
-table = catalog.load_table("inte_snowlake_bronze.test_scd2_evolution")
 
 # %%
-print(table)
-
-# %%
-with table.update_schema() as update:
-    update.add_column("weight", IntegerType(), "Poids")
-# %%
-print(table)
-# %%
-with table.update_schema() as update:
-    update.move_after("weight", "age")
-
-# %%
-table.history()
-# %%
-table.snapshots()
-# %%
-df = spark.createDataFrame(
-    [
-        ('patrick', 12, 49, 'BLABLA'),
-    ],
-    ('name', 'age', 'weight', 'description_serieuse')
-)
-
-table_tools.write_iceberg(
-    df=df,
-    primary_keys=['name'],
-    table_name="test_scd2_evolution",
-    glue_context=gc,
-    spark=spark,
-    write_mode="scd2",
-    tableProperties={
-        'write.spark.accept-any-schema': 'true'
-    },
+# Expirer les snapshots plus anciens que la date actuelle
+last_snapshot_timestamp_str = last_snapshot_timestamp.strftime('%Y-%m-%d %H:%M:%S')
+metadata.call(
+    "expire_snapshots",
     options={
-        "mergeSchema": "true"
-    },
-)
-# %%
-table.current_snapshot()
-# %%
-table.snapshots()
+        "older_than": f"TIMESTAMP '{last_snapshot_timestamp_str}'",
+    }
+).show()
 
 # %%
-metadata = table_tools.TableMetadata(spark, "iceberg_catalog", "inte_snowlake_bronze", "test_scd2_evolution")
-# %%
+# Supprimer les fichiers orphelins
+metadata.call(
+    "remove_orphan_files",
+    options={
+        "older_than": f"TIMESTAMP '{last_snapshot_timestamp_str}'",
+    }
+).show()
 
-spark.sql("""CALL iceberg_catalog.system.rollback_to_snapshot('inte_snowlake_bronze.test_scd2_evolution', 215792183996940713)""")
-
-# %%
-
-metadata.call("rollback_to_snapshot", options={
-    "snapshot_id": "215792183996940713"
-}).show()
-
-# %%
-catalog = load_catalog("iceberg_catalog")
-table = catalog.load_table("inte_snowlake_bronze.test_scd2_evolution")
-
-table.history()
-# %%
-print(table)
 # %%
