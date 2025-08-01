@@ -9,6 +9,8 @@ from pyspark.sql import SparkSession
 from awsglue.context import GlueContext
 import etl_tools
 from pyspark.sql.window import Window
+from pyiceberg.catalog import load_catalog
+
 
 logger = logging.getLogger(__name__)
 
@@ -581,5 +583,41 @@ def deactivate_deleted_records(
                 {deactivate_scd2}
     """
 
-    print(f"Executing delete query: {merge_query}")
+    logger.info(f"Executing delete query: {merge_query}")
     spark.sql(merge_query)
+    logger.info(f"Successfully marked {number_of_deleted_primary_keys} rows as deleted in target table {datasource.target_table_name}.")
+    # Clean up the temporary view
+    spark.catalog.dropTempView(tmp_view_name)
+
+
+def merge_schema(
+        datasource,
+        source_df,
+        target_df,
+        catalog,
+        source_database,
+        target_database):
+
+    """Merge the schema of the source DataFrame with the target DataFrame in Iceberg."""
+
+    dropped_columns = set(target_df.columns) - set(source_df.columns)
+    new_columns = set(source_df.columns) - set(target_df.columns)
+
+    if dropped_columns:
+        logger.warning(f"Some columns have been deleted from source table {datasource.target_table_name} but are still present in target... {dropped_columns}")
+        # TODO
+        # Handle dropped columns if necessary, e.g., by always setting them to null in target or by removing them
+
+    if new_columns:
+        logger.warning(f"Some columns have been added to source table {datasource.target_table_name} but are not present in target... {new_columns}")
+        pyiceberg_catalog = load_catalog(catalog)
+
+        target = pyiceberg_catalog.load_table(f"{target_database}.{datasource.target_table_name}")
+        source = pyiceberg_catalog.load_table(f"{source_database}.{datasource.source_table_name}")
+
+        with target.update_schema() as update:
+            update.union_by_name(source.schema())
+        logger.info(f"Successfully merged schema for table {datasource.target_table_name} from source to target.")
+
+    if not dropped_columns and not new_columns:
+        logger.info(f"No schema changes detected for table {datasource.target_table_name}. No action taken.")

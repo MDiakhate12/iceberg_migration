@@ -145,8 +145,8 @@ if table_exists:
             deleted_primary_keys=deleted_primary_keys,
         )
 
-        # TODO
-        # Merge new records into target table
+    # TODO
+    # Merge new records into target table
 else:
     logging.info(f"Writing table {datasource.target_table_name} into '{database}'...")
 
