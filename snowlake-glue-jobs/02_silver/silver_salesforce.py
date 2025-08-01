@@ -111,7 +111,7 @@ if table_exists:
 
     target_df = spark.table(f"{catalog}.{database}.{datasource.target_table_name}")
 
-    merge_schema(
+    table_tools.merge_schema(
         datasource=datasource,
         source_df=df,
         target_df=target_df,
